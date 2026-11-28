@@ -159,7 +159,7 @@ Each player chooses how pieces look from the display settings menu in the top ba
 | `classic` | Full size (`r=17`) | Separate, at `scPos` | The original `AUTHENTIC_NAMES_SVG` |
 | `seated` (default) | 76% size | Shares the unit point. Alone when empty, on the token's rim when occupied | Fitted around the token |
 | `compact` | 65% size | Small separate coin | Fitted around the token and star |
-| `flags` | Base point with a flag on a pole, which may overhang borders and sea | Coin at the base | Fitted around the base and flag |
+| `flags` | Base point with a flag on a pole, which may overhang borders and sea. `FLAG_SCALE` draws the cloth about as large as a classic token, and its frame (box, rings, badges, hit area) scales with it | Coin at the base | Fitted around the base and flag |
 | `nameplate` | None: the name lights up as a coloured pill | Inside the name or pill | The piece itself |
 
 ![The four fitted piece styles with every province occupied](images/display-settings-piece-styles.jpg)
