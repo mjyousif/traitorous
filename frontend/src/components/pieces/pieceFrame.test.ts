@@ -45,32 +45,32 @@ describe('getPieceFrame', () => {
     expect(getPieceFrame('classic').dislodgeOffset).toEqual({ x: 22, y: -18 });
     expect(getPieceFrame('seated').dislodgeOffset).toEqual({ x: 19, y: -15 });
     expect(getPieceFrame('compact').dislodgeOffset).toEqual({ x: 16, y: -13 });
-    expect(getPieceFrame('flags').dislodgeOffset).toEqual({ x: 20, y: 10 });
+    expect(getPieceFrame('flags').dislodgeOffset).toEqual({ x: 30, y: 15 });
     expect(getPieceFrame('flags').steppedAsideBannerY).toBe(14);
   });
 
   it('lifts a flag off its pole and mirrors it with the direction', () => {
     expect(getPieceFrame('flags', 1)).toMatchObject({
-      center: { x: 12, y: -14 },
-      badgeLeft: { x: -3, y: -32 },
-      badgeRight: { x: 27, y: -32 },
+      center: { x: 18, y: -21 },
+      badgeLeft: { x: -4.5, y: -48 },
+      badgeRight: { x: 40.5, y: -48 },
     });
     expect(getPieceFrame('flags', -1)).toMatchObject({
-      center: { x: -12, y: -14 },
-      badgeLeft: { x: -27, y: -32 },
-      badgeRight: { x: 3, y: -32 },
+      center: { x: -18, y: -21 },
+      badgeLeft: { x: -40.5, y: -48 },
+      badgeRight: { x: 4.5, y: -48 },
     });
     expect(getPieceFrame('flags')).toEqual(getPieceFrame('flags', 1));
     // Rings follow the whole flag, which flies to either side of its pole.
     expect(getPieceFrame('flags', 1).box).toEqual({
       x0: -7,
-      y0: -30,
-      x1: 30,
+      y0: -45,
+      x1: 45,
       y1: 7,
     });
     expect(getPieceFrame('flags', -1).box).toEqual({
-      x0: -30,
-      y0: -30,
+      x0: -45,
+      y0: -45,
       x1: 7,
       y1: 7,
     });
@@ -124,7 +124,7 @@ describe('makePiecePill', () => {
 describe('getPieceArrowScale', () => {
   it('stops arrows shorter of smaller pieces', () => {
     expect(PIECE_STYLES.map(getPieceArrowScale)).toEqual([
-      1, 0.8, 0.7, 0.5, 0.8,
+      1, 0.8, 0.7, 0.7, 0.8,
     ]);
   });
 });

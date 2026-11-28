@@ -41,7 +41,7 @@ describe('PieceOutline', () => {
       const y = Number(rect?.getAttribute('y'));
       const right = x + Number(rect?.getAttribute('width'));
       const bottom = y + Number(rect?.getAttribute('height'));
-      // The cloth reaches 30 units out from the pole, and the star at its foot about 7.
+      // The cloth reaches 45 units out from the pole (30 before FLAG_SCALE), the star at its foot about 7.
       expect(Math.min(x, -right)).toBeLessThan(-7);
       expect(direction === 1 ? right : -x).toBeGreaterThan(30);
       expect(y).toBeLessThan(-30);
@@ -191,15 +191,15 @@ describe('PieceHitArea', () => {
 
   it('takes the larger of the frame and a finger-sized minimum, around the centre', () => {
     const big = draw(
-      <PieceHitArea frame={getPieceFrame('flags', 1)} minRadius={30} />,
+      <PieceHitArea frame={getPieceFrame('flags', 1)} minRadius={40} />,
     ).querySelector('circle');
-    expect(big).toHaveAttribute('r', '30');
-    expect(big).toHaveAttribute('cx', '12');
-    expect(big).toHaveAttribute('cy', '-14');
+    expect(big).toHaveAttribute('r', '40');
+    expect(big).toHaveAttribute('cx', '18');
+    expect(big).toHaveAttribute('cy', '-21');
     const small = draw(
       <PieceHitArea frame={getPieceFrame('flags', 1)} minRadius={10} />,
     ).querySelector('circle');
-    expect(small).toHaveAttribute('r', '21');
+    expect(small).toHaveAttribute('r', '31.5');
     expect(
       draw(
         <PieceHitArea frame={getPieceFrame('classic')} minRadius={24} />,

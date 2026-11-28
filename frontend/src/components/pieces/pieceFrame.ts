@@ -88,10 +88,17 @@ export interface PieceFrame {
 
 const ORIGIN: Point = { x: 0, y: 0 };
 
-// A flag's cloth reaches 30 out from its pole (a fleet's pennant, the wider of the two), the
-// pole rises 29 with the cloth's rim above it, and the supply star at its foot is about 7 across.
-const FLAG_REACH = 30;
-const FLAG_TOP = -30;
+/**
+ * A flag is drawn at this multiple of its outline below, so its cloth is about as big as a
+ * classic token. Everything around a flag (rings, badges, hit area) scales with it.
+ */
+export const FLAG_SCALE = 1.5;
+
+// A flag's cloth reaches 30 out from its pole (a fleet's pennant, the wider of the two) and the
+// pole rises 29 with the cloth's rim above it, before scaling. The supply star at its foot
+// stays on the map at its own size, about 7 across.
+const FLAG_REACH = 30 * FLAG_SCALE;
+const FLAG_TOP = -30 * FLAG_SCALE;
 const FLAG_FOOT = 7;
 
 function flagBox(direction: FlagDirection): PieceBox {
@@ -103,11 +110,14 @@ function flagBox(direction: FlagDirection): PieceBox {
   };
 }
 
+/** A flag frame length, scaled with the flag and rounded to a tenth. */
+const flag = (n: number): number => Math.round(n * FLAG_SCALE * 10) / 10;
+
 const ARROW_SCALE: Record<PieceStyle, number> = {
   classic: 1,
   seated: 0.8,
   compact: 0.7,
-  flags: 0.5,
+  flags: 0.7,
   nameplate: 0.8,
 };
 
@@ -170,15 +180,15 @@ export function getPieceFrame(
       };
     case 'flags':
       return {
-        center: { x: 12 * flagDirection, y: -14 },
-        ringScale: 0.82,
+        center: { x: flag(12) * flagDirection, y: flag(-14) },
+        ringScale: flag(0.82),
         pill: null,
         box: flagBox(flagDirection),
-        hitRadius: 21,
-        badgeLeft: { x: 12 * flagDirection - 15, y: -32 },
-        badgeRight: { x: 12 * flagDirection + 15, y: -32 },
+        hitRadius: flag(21),
+        badgeLeft: { x: flag(12) * flagDirection - flag(15), y: flag(-32) },
+        badgeRight: { x: flag(12) * flagDirection + flag(15), y: flag(-32) },
         bannerY: 14,
-        dislodgeOffset: { x: 20, y: 10 },
+        dislodgeOffset: { x: flag(20), y: flag(10) },
         steppedAsideBannerY: 14,
       };
     default:

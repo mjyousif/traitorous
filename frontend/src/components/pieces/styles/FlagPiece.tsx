@@ -1,8 +1,9 @@
 import type { FlagDirection } from '../../../data/mapLayouts';
 import type { UnitMark } from '../../../utils/displayPrefs';
 import { UnitMarkGlyph } from '../marks';
-import type { PieceUnitType } from '../pieceFrame';
+import { FLAG_SCALE, type PieceUnitType } from '../pieceFrame';
 
+const POLE_WIDTH = 2.2;
 const FLAG_MARK_SCALE = 0.6;
 // A fleet's pennant tapers, so its mark sits smaller and nearer the pole to stay inside it
 const PENNANT_MARK_SCALE = 0.5;
@@ -29,11 +30,21 @@ export function FlagPiece({
   const markX = (isArmy ? 9.5 : 8.5) * direction;
   const markScale = isArmy ? FLAG_MARK_SCALE : PENNANT_MARK_SCALE;
   return (
-    <g>
-      <line x1="0" y1="0" x2="0" y2="-29" stroke="#2b2a22" strokeWidth="2.2" />
-      <polygon points={points} fill={color} stroke={rim} strokeWidth="1.3" />
-      <g transform={`translate(${markX}, -22) scale(${markScale})`}>
-        <UnitMarkGlyph unitType={unitType} mark={mark} color={color} />
+    <g transform={`scale(${FLAG_SCALE})`}>
+      <line
+        x1="0"
+        y1="0"
+        x2="0"
+        y2="-29"
+        stroke="#2b2a22"
+        strokeWidth={POLE_WIDTH}
+      />
+      {/* The cloth starts at the pole's outer edge, so it covers the pole's whole width */}
+      <g transform={`translate(${(-POLE_WIDTH / 2) * direction}, 0)`}>
+        <polygon points={points} fill={color} stroke={rim} strokeWidth="1.3" />
+        <g transform={`translate(${markX}, -22) scale(${markScale})`}>
+          <UnitMarkGlyph unitType={unitType} mark={mark} color={color} />
+        </g>
       </g>
       {!hasStar && (
         <circle r="3.4" fill={color} stroke={rim} strokeWidth="1.2" />
