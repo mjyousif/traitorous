@@ -403,3 +403,157 @@ def test_a_private_match_needs_its_passcode_for_spectator_press():
     assert [m["body"] for m in res.json()["messages"]] == ["Hello all"]
     # A seated player needs no passcode.
     assert feed(gid, bob_headers(), "GERMANY")["messages"][0]["body"] == "Hello all"
+
+
+def test_read_cursors_are_isolated_per_seat_and_validated(match):
+    send(match, alice_headers(), "FRANCE", "Public one")
+    send(match, bob_headers(), "GERMANY", "Secret to France", ["FRANCE"])
+    send(match, bob_headers(), "GERMANY", "Secret to England", ["ENGLAND"])
+
+    # Carol cannot mark France's press read, nor can a spectator.
+    assert (
+        client.post(
+            f"/api/press/read?game_id={match}",
+            json={"power": "FRANCE", "channel": "public", "seq": 1},
+            headers=carol_headers(),
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            f"/api/press/read?game_id={match}",
+            json={"power": "FRANCE", "channel": "public", "seq": 1},
+            headers=mallory_headers(),
+        ).status_code
+        == 403
+    )
+
+    # Foreign thread / malformed channel is rejected; seq is clamped & monotonic.
+    assert (
+        client.post(
+            f"/api/press/read?game_id={match}",
+            json={"power": "FRANCE", "channel": "ENGLAND+GERMANY", "seq": 1},
+            headers=alice_headers(),
+        ).status_code
+        == 422
+    )
+    assert (
+        client.post(
+            f"/api/press/read?game_id={match}",
+            json={"power": "FRANCE", "channel": "bogus", "seq": 1},
+            headers=alice_headers(),
+        ).status_code
+        == 422
+    )
+
+    # Alice has 2 readable messages (seq 1 public, seq 2 private). Posting seq=999 clamps to 2.
+    res = client.post(
+        f"/api/press/read?game_id={match}",
+        json={"power": "FRANCE", "channel": "GERMANY+FRANCE", "seq": 999},
+        headers=alice_headers(),
+    )
+    assert res.status_code == 200, res.text
+    assert res.json() == {"power": "FRANCE", "last_read": {"FRANCE+GERMANY": 2}}
+
+    # Monotonic: posting a lower seq never moves the cursor backwards.
+    res_lower = client.post(
+        f"/api/press/read?game_id={match}",
+        json={"power": "FRANCE", "channel": "FRANCE+GERMANY", "seq": 1},
+        headers=alice_headers(),
+    )
+    assert res_lower.status_code == 200
+    assert res_lower.json()["last_read"] == {"FRANCE+GERMANY": 2}
+
+    # Bob's and Carol's feeds never show France's read cursors; spectator gets {}.
+    assert feed(match, bob_headers(), "GERMANY")["last_read"] == {}
+    assert feed(match, carol_headers(), "ENGLAND")["last_read"] == {}
+    assert client.get(f"/api/press?game_id={match}").json()["last_read"] == {}
+
+
+def test_read_cursor_socket_pushes_only_to_same_seat(match):
+    def connect(user_id, email, power):
+        ws = client.websocket_connect(f"/ws/games/{match}?handshake=1&power={power}")
+        socket = ws.__enter__()
+        socket.send_json({"type": "auth", "token": make_jwt(user_id, email)})
+        assert receive_json(socket)["type"] == "game_update"
+        return ws, socket
+
+    alice_desktop_ctx, alice_desktop = connect(ALICE_ID, "alice@test.com", "FRANCE")
+    alice_mobile_ctx, alice_mobile = connect(ALICE_ID, "alice@test.com", "FRANCE")
+    bob_ctx, bob = connect(BOB_ID, "bob@test.com", "GERMANY")
+    carol_ctx, carol = connect(CAROL_ID, "carol@test.com", "ENGLAND")
+    spec_ctx = client.websocket_connect(f"/ws/games/{match}")
+    spec = spec_ctx.__enter__()
+    assert receive_json(spec)["type"] == "game_update"
+
+    try:
+        send(match, bob_headers(), "GERMANY", "Hello France", ["FRANCE"])
+        assert receive_json(alice_desktop)["type"] == "press"
+        assert receive_json(alice_mobile)["type"] == "press"
+        assert receive_json(bob)["type"] == "press"
+
+        # Alice marks the private thread read -> both of Alice's sockets receive press_read;
+        # Bob, Carol, and the spectator receive nothing before pong.
+        res = client.post(
+            f"/api/press/read?game_id={match}",
+            json={"power": "FRANCE", "channel": "FRANCE+GERMANY", "seq": 1},
+            headers=alice_headers(),
+        )
+        assert res.status_code == 200
+
+        for sock in (alice_desktop, alice_mobile):
+            msg = receive_json(sock)
+            assert msg == {
+                "type": "press_read",
+                "game_id": match,
+                "power": "FRANCE",
+                "last_read": {"FRANCE+GERMANY": 1},
+            }
+
+        for sock in (bob, carol, spec):
+            sock.send_json({"type": "ping"})
+            assert receive_json(sock)["type"] == "pong"
+    finally:
+        for ctx in (alice_desktop_ctx, alice_mobile_ctx, bob_ctx, carol_ctx, spec_ctx):
+            ctx.__exit__(None, None, None)
+
+
+def test_surrendered_player_can_still_mark_press_read_and_sandboxes_refuse(match):
+    send(match, alice_headers(), "FRANCE", "Public note")
+    surrendered = client.post(
+        f"/api/games/{match}/surrender",
+        json={"power": "ENGLAND", "user_id": CAROL_ID, "leave": False},
+        headers=carol_headers(),
+    )
+    assert surrendered.status_code == 200
+    res = client.post(
+        f"/api/press/read?game_id={match}",
+        json={"power": "ENGLAND", "channel": "public", "seq": 1},
+        headers=carol_headers(),
+    )
+    assert res.status_code == 200
+    assert res.json()["last_read"] == {"public": 1}
+
+    solo = client.post("/api/games/solo-sandbox").json()
+    solo_id = solo.get("game_id") or solo["state"]["game_id"]
+    assert (
+        client.post(
+            f"/api/press/read?game_id={solo_id}",
+            json={"power": "FRANCE", "channel": "public", "seq": 1},
+        ).status_code
+        == 409
+    )
+
+    entered = client.post(
+        f"/api/sandbox/enter?game_id={match}", json={"power": "FRANCE"}, headers=alice_headers()
+    )
+    assert entered.status_code == 200
+    sbx_id = entered.json()["game_id"]
+    assert (
+        client.post(
+            f"/api/press/read?game_id={sbx_id}",
+            json={"power": "FRANCE", "channel": "public", "seq": 1},
+            headers=alice_headers(),
+        ).status_code
+        == 404
+    )

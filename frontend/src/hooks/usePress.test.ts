@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pressStore } from '../lib/pressStore';
 import type { Power, PressFeed, PressMessage } from '../types/diplomacy';
 import {
+  markPressRead,
   PRESS_POLL_MS,
   sendPress,
   usePressBadge,
@@ -27,9 +28,13 @@ const msg = (seq: number, sender: Power | null = 'GERMANY'): PressMessage => ({
   orders: [],
 });
 
-const feed = (messages: PressMessage[]): PressFeed => ({
+const feed = (
+  messages: PressMessage[],
+  last_read?: Record<string, number>,
+): PressFeed => ({
   power: 'FRANCE',
   messages,
+  ...(last_read ? { last_read } : {}),
 });
 
 const answer = (body: unknown, ok = true, status = 200) =>
@@ -293,5 +298,109 @@ describe('sendPress', () => {
         body: 'x',
       }),
     ).rejects.toThrow('too quickly');
+  });
+});
+
+describe('read cursor sync', () => {
+  it('merges server last_read on load without echoing POST /api/press/read', async () => {
+    authedFetch.mockReturnValueOnce(
+      answer(feed([msg(1), msg(2)], { public: 2 })),
+    );
+    renderHook(() => usePressSync({ gameId: 'g1', power: 'FRANCE' }));
+    await waitFor(() => expect(pressStore.getState().status).toBe('ready'));
+    expect(pressStore.getState().lastRead).toEqual({ public: 2 });
+    expect(pressStore.getState().serverLastRead).toEqual({ public: 2 });
+    expect(urls()).toEqual(['/api/press?game_id=g1&power=FRANCE']);
+  });
+
+  it('posts /api/press/read once per advance, never loops on clamp, and skips spectators', async () => {
+    authedFetch.mockReturnValueOnce(answer(feed([msg(1), msg(2)])));
+    renderHook(() => usePressSync({ gameId: 'g1', power: 'FRANCE' }));
+    await waitFor(() => expect(pressStore.getState().status).toBe('ready'));
+
+    // Server clamps seq 50 -> 2; hook should still only call POST once.
+    authedFetch.mockReturnValueOnce(
+      answer({ power: 'FRANCE', last_read: { public: 2 } }),
+    );
+    act(() => pressStore.markRead('public', 50));
+    await waitFor(() => expect(authedFetch).toHaveBeenCalledTimes(2));
+    const [postUrl, postInit] = authedFetch.mock.calls[1];
+    expect(postUrl).toBe('/api/press/read?game_id=g1');
+    expect(JSON.parse(postInit.body)).toEqual({
+      power: 'FRANCE',
+      channel: 'public',
+      seq: 50,
+    });
+    expect(pressStore.getState().serverLastRead).toEqual({ public: 2 });
+
+    // No extra POST even though lastRead (50) > serverLastRead (2) after clamp.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(authedFetch).toHaveBeenCalledTimes(2);
+
+    // Spectators never call POST /api/press/read.
+    authedFetch.mockReset();
+    authedFetch.mockReturnValueOnce(
+      answer({ power: null, messages: [msg(1)], last_read: {} }),
+    );
+    renderHook(() => usePressSync({ gameId: 'g2', power: null }));
+    await waitFor(() => expect(pressStore.getState().status).toBe('ready'));
+    act(() => pressStore.markRead('public', 1));
+    expect(authedFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('backfills higher localStorage marks to the server and merges catchUp cursors', async () => {
+    localStorage.setItem(
+      'sloplomacy_press_read_v2:g1:FRANCE',
+      JSON.stringify({ public: 4 }),
+    );
+    authedFetch
+      .mockReturnValueOnce(answer(feed([msg(1), msg(4)], { public: 1 })))
+      .mockReturnValueOnce(
+        answer({ power: 'FRANCE', last_read: { public: 4 } }),
+      );
+
+    renderHook(() => usePressSync({ gameId: 'g1', power: 'FRANCE' }));
+    await waitFor(() => expect(authedFetch).toHaveBeenCalledTimes(2));
+    expect(urls()[1]).toBe('/api/press/read?game_id=g1');
+    expect(pressStore.getState().serverLastRead).toEqual({ public: 4 });
+
+    authedFetch.mockReturnValueOnce(
+      answer(feed([msg(5)], { public: 4, 'FRANCE+GERMANY': 5 })),
+    );
+    act(() => pressStore.setSocketOpen(true));
+    await waitFor(() =>
+      expect(pressStore.getState().lastRead['FRANCE+GERMANY']).toBe(5),
+    );
+    expect(authedFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('retries failed /api/press/read on socket reconnect without throwing', async () => {
+    authedFetch.mockReturnValueOnce(answer(feed([msg(1)])));
+    renderHook(() => usePressSync({ gameId: 'g1', power: 'FRANCE' }));
+    await waitFor(() => expect(pressStore.getState().status).toBe('ready'));
+
+    authedFetch.mockReturnValueOnce(answer({}, false, 503));
+    act(() => pressStore.markRead('public', 1));
+    await waitFor(() => expect(authedFetch).toHaveBeenCalledTimes(2));
+    expect(pressStore.getState().serverLastRead).toEqual({});
+
+    authedFetch
+      .mockReturnValueOnce(answer(feed([])))
+      .mockReturnValueOnce(
+        answer({ power: 'FRANCE', last_read: { public: 1 } }),
+      );
+    act(() => pressStore.setSocketOpen(true));
+    await waitFor(() =>
+      expect(pressStore.getState().serverLastRead).toEqual({ public: 1 }),
+    );
+  });
+
+  it('markPressRead throws on HTTP errors', async () => {
+    authedFetch.mockReturnValueOnce(answer({}, false, 403));
+    await expect(
+      markPressRead('g1', { power: 'FRANCE', channel: 'public', seq: 1 }),
+    ).rejects.toThrow('403');
   });
 });

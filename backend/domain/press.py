@@ -6,6 +6,33 @@ from pydantic import BaseModel, Field
 
 MAX_PRESS_BODY_LENGTH = 1000
 
+# Must match `ALL_POWERS` order in `frontend/src/types/diplomacy.ts` so thread keys align.
+CHANNEL_POWER_ORDER: tuple[Power, ...] = (
+    Power.FRANCE,
+    Power.ENGLAND,
+    Power.GERMANY,
+    Power.ITALY,
+    Power.AUSTRIA,
+    Power.RUSSIA,
+    Power.TURKEY,
+)
+
+
+def normalize_channel_key(channel: str, seat: Power) -> str | None:
+    """Validate and canonicalize a press channel key (`public`, `backchannel`, or `POWER+POWER...`)."""
+    if channel in ("public", "backchannel"):
+        return channel
+    parts = channel.split("+")
+    if len(parts) < 2:
+        return None
+    part_set = set(parts)
+    if len(part_set) != len(parts):
+        return None
+    valid_powers = {p.value for p in CHANNEL_POWER_ORDER}
+    if not part_set <= valid_powers or seat.value not in part_set:
+        return None
+    return "+".join(p.value for p in CHANNEL_POWER_ORDER if p.value in part_set)
+
 
 class PressMessage(BaseModel):
     """A message as the server keeps it. `sender` is always the real author, so never send this
@@ -90,6 +117,22 @@ class PressFeed(BaseModel):
 
     power: Power | None
     messages: list[PressMessageView]
+    last_read: dict[str, int] = Field(default_factory=dict)
+
+
+class PressReadRequest(BaseModel):
+    """Marks a press channel read up to `seq` in the caller's own feed."""
+
+    power: Power
+    channel: str = Field(min_length=1, max_length=128)
+    seq: int = Field(ge=0)
+
+
+class PressReadResponse(BaseModel):
+    """Confirmed per-channel read cursors for the caller's seat."""
+
+    power: Power
+    last_read: dict[str, int] = Field(default_factory=dict)
 
 
 class PressPostRequest(BaseModel):

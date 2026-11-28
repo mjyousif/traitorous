@@ -482,6 +482,19 @@ export interface PressFeed {
   /** The seat the feed is for; null for a spectator, who is sent the public box alone. */
   power: Power | null;
   messages: PressMessage[];
+  /** Server-persisted per-channel read cursors for the seat (`{}` for spectators). */
+  last_read?: Record<string, number>;
+}
+
+export interface PressReadRequest {
+  power: Power;
+  channel: string;
+  seq: number;
+}
+
+export interface PressReadResponse {
+  power: Power;
+  last_read: Record<string, number>;
 }
 
 export interface PressPostRequest {
@@ -502,10 +515,19 @@ export interface WebSocketPressUpdate {
   messages: PressMessage[];
 }
 
+/** Updated read cursors for another device/tab connected to the same seat. */
+export interface WebSocketPressReadUpdate {
+  type: 'press_read';
+  game_id: string;
+  power: Power;
+  last_read: Record<string, number>;
+}
+
 export type WebSocketMessage =
   | WebSocketGameUpdate
   | WebSocketLobbyUpdate
   | WebSocketPressUpdate
+  | WebSocketPressReadUpdate
   | { type: 'pong' };
 
 export interface ScenarioRequest {

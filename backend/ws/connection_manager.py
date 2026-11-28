@@ -215,6 +215,26 @@ class ConnectionManager:
         for ws in await send_to_all(sends):
             self.disconnect_game(game_id, ws)
 
+    async def broadcast_press_read(
+        self, game_id: str, power: Power, last_read: dict[str, int]
+    ) -> None:
+        """Push updated read cursors strictly to open sockets holding `power`'s seat."""
+        connections = self.game_connections.get(game_id)
+        if not connections:
+            return
+
+        payload = {
+            "type": "press_read",
+            "game_id": game_id,
+            "power": power.value,
+            "last_read": dict(last_read),
+        }
+        sends = [(ws, payload) for ws, ws_power in list(connections.items()) if ws_power == power]
+        if not sends:
+            return
+        for ws in await send_to_all(sends):
+            self.disconnect_game(game_id, ws)
+
     async def broadcast_lobby(self) -> None:
         if not self.lobby_connections:
             return

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { pressStore } from '../lib/pressStore';
 import { useDiplomacyWebSocket } from './useDiplomacyWebSocket';
 
 const auth = vi.hoisted(() => ({ token: null as string | null }));
@@ -375,5 +376,46 @@ describe('useDiplomacyWebSocket connection', () => {
     });
     expect(FakeSocket.instances).toHaveLength(2);
     second.unmount();
+  });
+
+  it('syncs press_read socket updates into pressStore for matching game and seat', async () => {
+    pressStore.reset();
+    pressStore.open('match_1', 'FRANCE');
+    const { unmount } = renderHook(() =>
+      useDiplomacyWebSocket({ ...options, authKey: 'user-alice' }),
+    );
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(1));
+    const sock = FakeSocket.instances[0];
+
+    act(() => {
+      sock.onmessage?.({
+        data: JSON.stringify({
+          type: 'press_read',
+          game_id: 'match_1',
+          power: 'FRANCE',
+          last_read: { public: 3, 'FRANCE+GERMANY': 5 },
+        }),
+      });
+      // Different seat/game is ignored.
+      sock.onmessage?.({
+        data: JSON.stringify({
+          type: 'press_read',
+          game_id: 'match_1',
+          power: 'GERMANY',
+          last_read: { public: 99 },
+        }),
+      });
+    });
+
+    expect(pressStore.getState().lastRead).toEqual({
+      public: 3,
+      'FRANCE+GERMANY': 5,
+    });
+    expect(pressStore.getState().serverLastRead).toEqual({
+      public: 3,
+      'FRANCE+GERMANY': 5,
+    });
+    unmount();
+    pressStore.reset();
   });
 });

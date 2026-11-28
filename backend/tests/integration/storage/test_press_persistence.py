@@ -162,3 +162,102 @@ def test_anonymous_dm_and_group_threads_survive_restart(supabase):
         sorted(germany_msgs[1]["recipients"]) == ["GERMANY", "RUSSIA"]
         or len(germany_msgs[1]["recipients"]) >= 1
     )
+
+
+def test_press_read_cursors_survive_restart(supabase):
+    from domain.board import Power
+
+    gid = _create_game()
+    _join(gid, "GERMANY", BOB)
+    assert _send(gid, "FRANCE", "Public wire").status_code == 200
+    assert _send(gid, "FRANCE", "Private wire", ["GERMANY"]).status_code == 200
+
+    r1 = client.post(
+        f"/api/press/read?game_id={gid}",
+        json={"power": "GERMANY", "channel": "public", "seq": 1},
+    )
+    assert r1.status_code == 200
+    r2 = client.post(
+        f"/api/press/read?game_id={gid}",
+        json={"power": "GERMANY", "channel": "GERMANY+FRANCE", "seq": 2},
+    )
+    assert r2.status_code == 200
+    assert r2.json()["last_read"] == {"public": 1, "FRANCE+GERMANY": 2}
+    assert supabase.press_cursors[gid][Power.GERMANY] == {"public": 1, "FRANCE+GERMANY": 2}
+
+    _restart_container(gid)
+
+    feed = client.get(f"/api/press?game_id={gid}&power=GERMANY")
+    assert feed.status_code == 200
+    assert feed.json()["last_read"] == {"public": 1, "FRANCE+GERMANY": 2}
+
+
+def test_failed_cursor_read_returns_503_without_wiping_saved_cursors(supabase):
+    from storage.press_cursors import GAME_PRESS_CURSORS
+
+    gid = _create_game()
+    _join(gid, "GERMANY", BOB)
+    _send(gid, "FRANCE", "Keep cursor")
+    assert (
+        client.post(
+            f"/api/press/read?game_id={gid}",
+            json={"power": "GERMANY", "channel": "public", "seq": 1},
+        ).status_code
+        == 200
+    )
+    _restart_container(gid)
+    assert client.get(f"/api/press?game_id={gid}&power=GERMANY").json()["last_read"] == {
+        "public": 1
+    }
+
+    GAME_PRESS_CURSORS.pop(gid, None)
+    supabase.reads_fail = True
+    assert client.get(f"/api/press?game_id={gid}&power=GERMANY").status_code == 503
+    assert (
+        client.post(
+            f"/api/press/read?game_id={gid}",
+            json={"power": "GERMANY", "channel": "public", "seq": 1},
+        ).status_code
+        == 503
+    )
+    assert gid not in GAME_PRESS_CURSORS
+
+    supabase.reads_fail = False
+    assert client.get(f"/api/press?game_id={gid}&power=GERMANY").json()["last_read"] == {
+        "public": 1
+    }
+
+
+def test_failed_cursor_save_marks_unsaved_and_retries_on_next_advance(supabase):
+    from storage.press_cursors import GAME_PRESS_CURSORS, PRESS_CURSORS_UNSAVED
+    from storage.store import evict_game, has_unsaved_work
+
+    gid = _create_game()
+    _join(gid, "GERMANY", BOB)
+    _send(gid, "FRANCE", "First")
+    _send(gid, "FRANCE", "Second")
+
+    supabase.writes_fail = True
+    assert (
+        client.post(
+            f"/api/press/read?game_id={gid}",
+            json={"power": "GERMANY", "channel": "public", "seq": 1},
+        ).status_code
+        == 200
+    )
+    assert gid in PRESS_CURSORS_UNSAVED
+    assert has_unsaved_work(gid) is True
+
+    supabase.writes_fail = False
+    assert (
+        client.post(
+            f"/api/press/read?game_id={gid}",
+            json={"power": "GERMANY", "channel": "public", "seq": 2},
+        ).status_code
+        == 200
+    )
+    assert gid not in PRESS_CURSORS_UNSAVED
+    assert has_unsaved_work(gid) is False
+
+    evict_game(gid)
+    assert gid not in GAME_PRESS_CURSORS

@@ -24,6 +24,7 @@ erDiagram
     MULTIPLAYER_GAMES ||--o{ GAME_PHASES : "resolved phases (game_id)"
     MULTIPLAYER_GAMES ||--o{ PRESS_THREADS : "threads (game_id)"
     MULTIPLAYER_GAMES ||--o{ PRESS_MESSAGES : "messages (game_id)"
+    MULTIPLAYER_GAMES ||--o{ PRESS_READ_CURSORS : "read cursors (game_id)"
     PRESS_THREADS ||--o{ PRESS_THREAD_MEMBERS : "members (thread_id)"
     PRESS_THREADS ||--o{ PRESS_MESSAGES : "contains (thread_id, game_id)"
 
@@ -121,6 +122,14 @@ erDiagram
         timestamptz sent_at
         jsonb meta "orders, numbers, public_number"
     }
+
+    PRESS_READ_CURSORS {
+        uuid game_id PK, FK "references multiplayer_games(id)"
+        text power PK
+        text channel_key PK "public, backchannel, or POWER+POWER..."
+        int4 last_read_seq "monotonic high-water mark (>= 0)"
+        timestamptz updated_at
+    }
 ```
 
 ### Key Schema Design Choices
@@ -128,7 +137,7 @@ erDiagram
 - **UUID Foreign Keys & Soft-Leave Seat History**: All child tables reference `multiplayer_games.id` (`uuid`) with `ON DELETE CASCADE`. `public.game_participants` uses a surrogate `id` PK plus a partial unique index `idx_game_participants_active_seat` on `(game_id, power) WHERE left_at IS NULL`. Leaving or surrendering-and-leaving stamps `left_at` and `left_phase_index` rather than deleting the row, preserving former-player tenure while freeing the seat for a replacement player.
 - **Zero-Byte Virtual Computed Columns**: `public.has_passcode(g)` and `public.board_preview(g)` are `IMMUTABLE` SQL functions exposed as computed PostgREST columns (`?select=...,has_passcode,board_preview`) and restricted to `service_role`. Lobby refreshes never transfer plaintext passcodes, live orders, or redundant JSONB copies.
 - **Per-Phase History (`public.game_phases`)**: Resolved phases (including `"Admin"` snapshots) are stored as append-only rows keyed by `(game_id, phase_index)` with no 30-phase cap. `snapshot` strips `unit_options`, `preview`, `issues`, `timer`, `finalized_powers`, `turn_history`, and `admin_log` to eliminate $O(N^2)$ cumulative log bloat.
-- **Normalized Press (`press_threads`, `press_thread_members`, `press_messages`)**: Each message appends one row in $O(1)$ under a deterministic `(game_id, thread_key)` thread, with a composite FK `(thread_id, game_id) -> press_threads(id, game_id)` preventing cross-game thread links.
+- **Normalized Press (`press_threads`, `press_thread_members`, `press_messages`, `press_read_cursors`)**: Each message appends one row in $O(1)$ under a deterministic `(game_id, thread_key)` thread, with a composite FK `(thread_id, game_id) -> press_threads(id, game_id)` preventing cross-game thread links. `press_read_cursors` stores one monotonic per-seat, per-channel high-water mark `(game_id, power, channel_key) -> last_read_seq` enforced by a `BEFORE UPDATE` trigger so unread counts sync across devices without per-message read rows.
 - **Authoritative Profiles & No-PII Constraints**: SQL `CHECK` constraints forbid `@` tokens in `creator_guest_id`, `guest_id`, and `guest_display_name`, and forbid storing `guest_display_name` on registered UUID seats. Registered display names live exclusively in `public.profiles` (`handle_new_user()` defaults invalid/email metadata to `'Envoy'`, enforced by `profiles_display_name_valid`).
 - **Optimistic Concurrency (`state_revision` & `board_revision`)**: `state_revision` increments on every authoritative state mutation; `board_revision` (inside `game_state`) increments on board/turn changes and is checked by `POST /api/admin/board-edit`.
 - **Two-Phase Migration Rollout**: Legacy columns `multiplayer_games.{summary, history, press, is_sandbox, is_private}` remain deprecated on disk during Phase 1 for zero-downtime Cloud Run deploys and are scheduled for removal in Phase 2.
@@ -162,5 +171,5 @@ flowchart LR
 | `public.multiplayer_games` | **No access** (RLS blocks all SELECT/INSERT/UPDATE/DELETE) | Full read/write access |
 | `public.game_participants` | **No access** (RLS blocks all SELECT/INSERT/UPDATE/DELETE) | Full read/write access |
 | `public.game_phases` | **No access** (RLS blocks all SELECT/INSERT/UPDATE/DELETE) | Full read/write access |
-| `public.press_threads`, `press_thread_members`, `press_messages` | **No access** (RLS blocks all SELECT/INSERT/UPDATE/DELETE) | Full read/write access |
+| `public.press_threads`, `press_thread_members`, `press_messages`, `press_read_cursors` | **No access** (RLS blocks all SELECT/INSERT/UPDATE/DELETE) | Full read/write access |
 | `public.profiles` | `SELECT` everyone; `UPDATE` own row (`(select auth.uid()) = id`) | Full read/write access |

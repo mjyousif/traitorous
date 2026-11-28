@@ -35,10 +35,13 @@ _PERSISTED_THREAD_IDS: dict[str, dict[str, str]] = {}
 
 def clear_press_tracking(game_id: str) -> None:
     """Clear in-memory press messages and incremental persistence watermarks for `game_id`."""
+    from storage.press_cursors import clear_press_cursors
+
     GAME_PRESS.pop(game_id, None)
     PRESS_UNSAVED.discard(game_id)
     _PERSISTED_PRESS_SEQ.pop(game_id, None)
     _PERSISTED_THREAD_IDS.pop(game_id, None)
+    clear_press_cursors(game_id)
 
 
 def _is_saved_game(game_id: str) -> bool:

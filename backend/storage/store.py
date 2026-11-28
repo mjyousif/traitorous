@@ -41,6 +41,7 @@ from storage.press import (
 from storage.press import (
     clear_press_tracking,
 )
+from storage.press_cursors import has_unsaved_press_cursors
 from storage.profiles import PROFILE_NAMES as PROFILE_NAMES
 from storage.profiles import resolve_participant_name
 from storage.supabase import GAME_DB_IDS as GAME_DB_IDS
@@ -155,8 +156,13 @@ def adjudication_lock(game_id: str) -> asyncio.Lock:
 
 
 def has_unsaved_work(game_id: str) -> bool:
-    """True while memory holds a change to the game, phases, or press that Supabase has not stored yet."""
-    return game_id in UNSAVED_GAMES or game_id in PRESS_UNSAVED or has_unsaved_phases(game_id)
+    """True while memory holds a change to the game, phases, press, or cursors that Supabase has not stored yet."""
+    return (
+        game_id in UNSAVED_GAMES
+        or game_id in PRESS_UNSAVED
+        or has_unsaved_phases(game_id)
+        or has_unsaved_press_cursors(game_id)
+    )
 
 
 def evict_game(game_id: str) -> None:
