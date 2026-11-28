@@ -484,4 +484,104 @@ test.describe('Scenario: Press between three players', () => {
       throw error;
     }
   });
+
+  test('cross-device read sync: desktop read clears mobile notifications on open and live', async ({
+    browser,
+  }) => {
+    const recorder = new ScenarioRecorder('press_cross_device');
+    const matchName = `Press sync ${Date.now()}`;
+    try {
+      const gameId = await createMatch(matchName);
+      // Bob sends France messages across public, private thread, and backchannel before Alice opens.
+      await api(BOB, `/api/press?game_id=${gameId}`, {
+        power: BOB.power,
+        recipients: [],
+        anonymous: false,
+        body: 'Public greeting from Berlin.',
+      });
+      await api(BOB, `/api/press?game_id=${gameId}`, {
+        power: BOB.power,
+        recipients: [ALICE.power],
+        anonymous: false,
+        body: 'Private treaty draft.',
+      });
+      await api(BOB, `/api/press?game_id=${gameId}`, {
+        power: BOB.power,
+        recipients: [ALICE.power],
+        anonymous: true,
+        body: 'Anonymous whisper in backchannel.',
+      });
+
+      const desktop = await openAs(browser, ALICE, matchName, false);
+      recorder.attachListeners(desktop);
+      await desktop.locator('[data-testid="press-section"]').scrollIntoViewIfNeeded();
+
+      // Open each channel on desktop and wait for each read cursor POST to finish.
+      await expect(messages(desktop)).toHaveCount(1);
+      const waitThreadRead = desktop.waitForResponse(
+        (r) =>
+          r.url().includes('/api/press/read') &&
+          r.request().method() === 'POST' &&
+          r.status() === 200,
+      );
+      await desktop.locator('[data-testid="press-channel-FRANCE+GERMANY"]').click();
+      await waitThreadRead;
+
+      const waitBackchannelRead = desktop.waitForResponse(
+        (r) =>
+          r.url().includes('/api/press/read') &&
+          r.request().method() === 'POST' &&
+          r.status() === 200,
+      );
+      await desktop.locator('[data-testid="press-channel-backchannel"]').click();
+      await waitBackchannelRead;
+
+      await expect(
+        desktop.locator('[data-testid="press-unread-total"]'),
+      ).toHaveCount(0);
+      await recorder.recordStep(desktop, 'desktop_all_channels_read');
+
+      // Alice opens the same match on mobile in a fresh context (empty localStorage).
+      const mobile = await openAs(browser, ALICE, matchName, true);
+      recorder.attachListeners(mobile);
+      const mobilePressBtn = mobile.locator('[data-testid="mobile-press-toggle"]');
+      await expect(mobilePressBtn).toBeVisible();
+      await expect(
+        mobilePressBtn.locator('[data-testid="press-unread-badge"]'),
+      ).toHaveCount(0);
+      await recorder.recordStep(mobile, 'mobile_fresh_context_inherits_read_state');
+
+      // Bob sends another private message while both devices are open.
+      await api(BOB, `/api/press?game_id=${gameId}`, {
+        power: BOB.power,
+        recipients: [ALICE.power],
+        anonymous: false,
+        body: 'Follow-up after you read on desktop.',
+      });
+      await expect(
+        mobilePressBtn.locator('[data-testid="press-unread-badge"]'),
+      ).toHaveText('1');
+      await expect(
+        desktop.locator(
+          '[data-testid="press-channel-FRANCE+GERMANY"] [data-testid="press-unread"]',
+        ),
+      ).toHaveText('1');
+      await recorder.recordStep(mobile, 'mobile_live_unread_from_bob');
+
+      // Alice reads it on desktop -> mobile badge clears live via WebSocket press_read.
+      await desktop.locator('[data-testid="press-channel-FRANCE+GERMANY"]').click();
+      await expect(
+        desktop.locator('[data-testid="press-unread-total"]'),
+      ).toHaveCount(0);
+      await expect(
+        mobilePressBtn.locator('[data-testid="press-unread-badge"]'),
+      ).toHaveCount(0);
+      await recorder.recordStep(mobile, 'mobile_cleared_live_when_desktop_reads');
+
+      recorder.finalize('PASSED');
+    } catch (error) {
+      recorder.finalize('FAILED');
+      throw error;
+    }
+  });
 });

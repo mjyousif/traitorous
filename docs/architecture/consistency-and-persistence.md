@@ -26,6 +26,7 @@ Not everything in process memory is saved to Supabase:
 | **Resolved turn history** | `GAME_HISTORY[gid]` (lazy) | Yes (`public.game_phases`, full campaign — no 30-turn cap) | Appended incrementally ($O(1)$ per turn) via `PENDING_PHASE_UPSERTS`; lazy-loaded on demand after cold start. |
 | **Private match passcodes** | `GAME_PASSCODES[gid]` | Yes (`multiplayer_games.passcode`, virtual `has_passcode(g)`) | Never included in `MultiplayerGameSummary` or `GameState` responses. |
 | **Press messages (chat)** | `GAME_PRESS[gid]` | Yes (`press_threads`, `press_thread_members`, `press_messages`) | Stored in normalized tables and appended incrementally so board saves and rollbacks never touch press. |
+| **Press read cursors** | `GAME_PRESS_CURSORS[gid]` | Yes (`public.press_read_cursors`) | Per-seat, per-channel monotonic `last_read_seq` watermarks persisted independently of board and message writes. |
 | **Profile display names** | `PROFILE_NAMES[uid]` | Yes (`public.profiles`) | Hydrated on startup and updated when users sign in or rename. |
 | **Default local game (`proto_1901`)** | `GAMES["proto_1901"]` | No | Ephemeral local/default sandbox; never written to Supabase. |
 | **Hypothetical branches (`sbx_*`, `SANDBOX_BRANCHES`)** | `PRIVATE_SANDBOXES`, `SANDBOX_CHECKPOINTS` | No | Ephemeral "what-if" branches; cleared when the real turn resolves or resets. |
@@ -39,7 +40,7 @@ Every authoritative mutation (order updates, seat changes, adjudication, timer c
 1. **Summary sync & seat diffing**: `sync_summary()` updates `GAME_SUMMARIES[gid]`, and `persist_game()` invokes `sync_game_participants` RPC only when active seats or finalization flags changed (keeping routine order clicks to a single PostgREST upsert).
 2. **Coalesced async writes (`SAVES_RUNNING` + `UNSAVED_GAMES`)**: If a Supabase save is already in flight for `game_id`, a second concurrent `persist_game()` call marks `SAVES_RUNNING[game_id] = True` and returns immediately. When the active save finishes, it loops and writes the latest snapshot, preventing overlapping out-of-order HTTP PostgREST upserts.
 3. **Incremental phase persistence**: Resolved phases and rollbacks are queued in `PENDING_PHASE_UPSERTS` / `PENDING_PHASE_TRUNCATE_FROM` (`backend/storage/phases.py`) and flushed incrementally to `public.game_phases` after the parent `multiplayer_games` row saves.
-4. **Separate incremental press persistence**: Press writes append only new messages (`seq > _PERSISTED_PRESS_SEQ`) via [`backend/storage/press.py`](../../backend/storage/press.py) so chat traffic never contends with board saves.
+4. **Separate incremental press persistence**: Press writes append only new messages (`seq > _PERSISTED_PRESS_SEQ`) via [`backend/storage/press.py`](../../backend/storage/press.py) and incremental read-cursor advances via [`backend/storage/press_cursors.py`](../../backend/storage/press_cursors.py) so chat traffic never contends with board saves.
 
 ```mermaid
 flowchart TD
@@ -110,7 +111,7 @@ Instead, the frontend stages edits locally and submits a single `POST /api/admin
 `GET /api/games` refreshes the lobby from Supabase (`sync_lobby_with_db`). Memory stays authoritative for a loaded game; the refresh only decides which in-memory games Supabase no longer has.
 
 - **Only what was known at the start of the read can be called deleted.** A game created and saved while the read was in flight is missing from its rows through no fault of its own. The sync snapshots the known games before the read and never evicts one outside that snapshot.
-- **Unsaved work blocks eviction.** `has_unsaved_work(gid)` is true while the game (`UNSAVED_GAMES`) or its press (`PRESS_UNSAVED`) has a change Supabase has not stored. The lobby sync, `GET /api/games/{id}` and the capacity sweep all skip such a game.
+- **Unsaved work blocks eviction.** `has_unsaved_work(gid)` is true while the game (`UNSAVED_GAMES`), its phases (`HISTORY_UNSAVED`), its press (`PRESS_UNSAVED`), or its read cursors (`PRESS_CURSORS_UNSAVED`) have a change Supabase has not stored. The lobby sync, `GET /api/games/{id}` and the capacity sweep all skip such a game.
 - **One read for many callers.** Requests arriving while a table read is in flight wait for that read instead of starting their own. A request after it finishes reads again, so nothing is served from an older answer.
 - **An unreadable stored summary is withheld, never replaced.** A save writes the seats, privacy and passcode only inside the summary JSON, so the plain columns (`is_private`, `passcode`) cannot stand in for it: a game rebuilt from them would be public, passcode-less and empty. `build_summary_from_row` returns `None` for a row whose summary fails validation (logged at `WARNING`). `load_game_from_db` then raises `SupabaseUnavailable` (`503`), and the lobby read maps the row to `None`: not listed, not loaded, and not taken for a deleted game, so a loaded game stays in memory. A row that never stored a summary still reads from its columns.
 

@@ -357,7 +357,8 @@ def test_full_normalized_lifecycle_against_live_postgrest(live_postgrest):
     )
 
     evict_game(gid)
-    ger_press = api.get(f"/api/press?game_id={gid}&power=GERMANY").json()["messages"]
+    ger_press_res = api.get(f"/api/press?game_id={gid}&power=GERMANY").json()
+    ger_press = ger_press_res["messages"]
     assert [m["body"] for m in ger_press] == [
         "Public wire",
         "Signed suggestion",
@@ -369,6 +370,21 @@ def test_full_normalized_lifecycle_against_live_postgrest(live_postgrest):
     assert ger_press[2]["sender"] is None and ger_press[2]["anonymous"] is True
     assert ger_press[3]["sender"] is None and ger_press[3]["anonymous"] is True
 
+    # 7b. Read cursors round-trip across container eviction in press_read_cursors.
+    for channel, seq in (("public", 1), ("FRANCE+GERMANY", 2), ("backchannel", 3)):
+        r = api.post(
+            f"/api/press/read?game_id={gid}",
+            json={"power": "GERMANY", "channel": channel, "seq": seq},
+        )
+        assert r.status_code == 200, r.text
+    evict_game(gid)
+    reloaded_press = api.get(f"/api/press?game_id={gid}&power=GERMANY").json()
+    assert reloaded_press["last_read"] == {
+        "public": 1,
+        "FRANCE+GERMANY": 2,
+        "backchannel": 3,
+    }
+
     # 8. Anon JWT cannot read any game, participant, phase, or press table directly.
     with httpx.Client(timeout=10.0) as raw:
         for table in (
@@ -378,6 +394,7 @@ def test_full_normalized_lifecycle_against_live_postgrest(live_postgrest):
             "press_threads",
             "press_thread_members",
             "press_messages",
+            "press_read_cursors",
         ):
             r = raw.get(f"{pg_url}/{table}?limit=5", headers=anon_headers)
             assert r.status_code in (401, 403) or r.json() == []
@@ -394,6 +411,7 @@ def test_full_normalized_lifecycle_against_live_postgrest(live_postgrest):
             ("game_phases", "game_id"),
             ("press_threads", "game_id"),
             ("press_messages", "game_id"),
+            ("press_read_cursors", "game_id"),
         ):
             rem = raw.get(
                 f"{pg_url}/{table}?{fk}=eq.{quote(db_id, safe='')}&limit=1",

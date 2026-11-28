@@ -12,6 +12,11 @@ from storage.phases import (
     STATS_CACHE,
 )
 from storage.press import _PERSISTED_PRESS_SEQ, _PERSISTED_THREAD_IDS
+from storage.press_cursors import (
+    _PERSISTED_CURSORS,
+    GAME_PRESS_CURSORS,
+    PRESS_CURSORS_UNSAVED,
+)
 from storage.store import (
     _LAST_PARTICIPANTS_SIG,
     GAME_SUMMARIES,
@@ -57,11 +62,18 @@ def supabase():
         patch("storage.phases.delete_phases_from_db", side_effect=db.delete_phases),
         patch("storage.press.load_press_from_db", side_effect=db.load_press),
         patch("storage.press.save_press_to_db", side_effect=db.save_press),
+        patch(
+            "storage.press_cursors.load_press_cursors_from_db", side_effect=db.load_press_cursors
+        ),
+        patch("storage.press_cursors.save_press_cursors_to_db", side_effect=db.save_press_cursors),
     ):
         yield db
     UNSAVED_GAMES.clear()
     HISTORY_UNSAVED.clear()
     PRESS_UNSAVED.clear()
+    PRESS_CURSORS_UNSAVED.clear()
+    GAME_PRESS_CURSORS.clear()
+    _PERSISTED_CURSORS.clear()
     GAME_DB_IDS.clear()
     GAME_PHASE_COUNTS.clear()
     GAME_HISTORY_LOADED.clear()

@@ -53,8 +53,9 @@ All operational endpoints accept an optional query parameter `?game_id=<id>`. Wh
 | :--- | :--- | :--- | :--- | :--- |
 | `GET` | `/api/history` | List all resolved phases of the game, oldest first | *None* | `List[TurnHistoryEntry]` |
 | `GET` | `/api/history/stats` | Per-power tactical, diplomatic, and logistics War Ledger derived strictly from resolved history | *None* | `CampaignStatsResponse` |
-| `GET` | `/api/press` | The press (chat) the caller's seat may read, oldest first (a spectator: the public box alone); `?after=<seq>` for newer messages only | *None* | `PressFeed` |
+| `GET` | `/api/press` | The press (chat) the caller's seat may read, oldest first, plus that seat's per-channel `last_read` cursors (a spectator: the public box alone with `{}`); `?after=<seq>` for newer messages only | *None* | `PressFeed` |
 | `POST` | `/api/press` | Send press from the caller's seat to the public box or a private thread, signed or anonymous | `PressPostRequest` | `PressMessageView` |
+| `POST` | `/api/press/read` | Advance the caller's own per-channel read cursor monotonically and push `press_read` to the same seat's other sockets | `PressReadRequest` | `PressReadResponse` |
 | `GET` | `/api/history/{index}` | One resolved phase as it began, with every power's orders and how each resolved | *None* | `TurnRecord` |
 
 ### Sandbox
@@ -95,7 +96,7 @@ All operational endpoints accept an optional query parameter `?game_id=<id>`. Wh
 ### Real-Time WebSocket Synchronization
 | Protocol | Endpoint | Description | Client Messages | Server Broadcasts |
 | :--- | :--- | :--- | :--- | :--- |
-| `WS` | `/ws/games/{game_id}` | Live room state sync (orders, finalization, adjudication, participants), and new press for a seated player | `{"type": "ping"}` / `{"type": "refresh"}` | `WebSocketGameUpdate`, `WebSocketPressUpdate` |
+| `WS` | `/ws/games/{game_id}` | Live room state sync (orders, finalization, adjudication, participants), new press, and same-seat `press_read` cursor sync | `{"type": "ping"}` / `{"type": "refresh"}` | `WebSocketGameUpdate`, `WebSocketPressUpdate`, `WebSocketPressReadUpdate` |
 | `WS` | `/ws/lobby` | Live multiplayer game browser sync | `{"type": "ping"}` / `{"type": "refresh"}` | `WebSocketLobbyUpdate` |
 
 ---
@@ -739,7 +740,6 @@ Rules that hold on both endpoints and on the socket:
 ```json
 {
   "power": "FRANCE",
-  "revealed": false,
   "messages": [
     {
       "id": "5f0c…",
@@ -754,9 +754,14 @@ Rules that hold on both endpoints and on the socket:
       "phase": "Movement",
       "orders": []
     }
-  ]
+  ],
+  "last_read": {
+    "public": 2,
+    "FRANCE+ENGLAND+GERMANY": 3
+  }
 }
 ```
+`last_read` is always returned for a seated caller (even when `after > 0`) and is `{}` for spectators.
 
 ### `POST /api/press`
 
@@ -788,12 +793,44 @@ The sender is `power`, which must be the caller's own seat. The sender is droppe
 | `422` | The body is empty (with no `orders`) or longer than 1000 characters, the only recipient is the sender, or a recipient's seat is empty. With `orders`: the message is an anonymous group thread (2+ recipients), a unit or build slot does not exist or belongs to a disallowed power (outside the thread, or not the recipient in a 1-to-1 backchannel), an order type does not fit the current phase or target (e.g., non-dislodged unit in Retreats, `RETREAT` without target, `BUILD_` slot outside Adjustments, inland fleet build), or a unit/slot has two orders. |
 | `429` | The seat sent more than 8 messages within 10 seconds. |
 
-### Press on the game socket (`WebSocketPressUpdate`)
+### `POST /api/press/read`
 
-A seated player's game socket receives each new message it may read, as that player may see it and numbered in that player's own feed. A socket without a seat is sent no press.
+Advances the caller's per-channel read cursor (`public`, `backchannel`, or canonical `POWER+POWER...` thread containing `power`) monotonically up to `seq` (clamped to the highest `seq` readable by that seat). Persists to `public.press_read_cursors` and pushes a `press_read` WebSocket update strictly to other open sockets holding that same seat.
+
+| Query | Description |
+| :--- | :--- |
+| `game_id` | The match. |
+
+#### Request (`PressReadRequest`):
+```json
+{ "power": "FRANCE", "channel": "FRANCE+GERMANY", "seq": 4 }
+```
+
+#### Response (`PressReadResponse`):
+```json
+{ "power": "FRANCE", "last_read": { "public": 2, "FRANCE+GERMANY": 4 } }
+```
+
+| Status | When |
+| :--- | :--- |
+| `403` | The caller does not hold `power`'s seat (spectators included). Surrendered seats are allowed to mark press read. |
+| `404` | The game is a private sandbox (`sbx_*`) or does not exist. |
+| `409` | The game is a solo or saved sandbox. |
+| `422` | `channel` is malformed or names a thread `power` does not belong to, or `seq < 0`. |
+| `503` | Press or cursor loading from Supabase failed. |
+
+### Press on the game socket (`WebSocketPressUpdate` & `WebSocketPressReadUpdate`)
+
+A seated player's game socket receives each new message it may read, as that player may see it and numbered in that player's own feed. A socket without a seat is sent public messages only (`power: null`).
 
 ```json
 { "type": "press", "game_id": "mp_ab12cd", "power": "GERMANY", "messages": [ { "id": "…", "seq": 4, "sender": "FRANCE", "anonymous": false, "recipients": ["GERMANY"], "body": "…", "sent_at": "…", "season": "Spring", "year": 1901, "phase": "Movement", "orders": [] } ] }
+```
+
+When the player marks a channel read on one device/tab, other open sockets for that **same seat** receive `press_read` (never sent to other powers or spectators):
+
+```json
+{ "type": "press_read", "game_id": "mp_ab12cd", "power": "FRANCE", "last_read": { "public": 2, "FRANCE+GERMANY": 4 } }
 ```
 
 `power` is the seat the socket connected as, so a client can drop a message meant for a seat it has since left.

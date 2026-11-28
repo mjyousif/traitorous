@@ -254,6 +254,12 @@ export function useDiplomacyWebSocket({
             } else if (data.type === 'press') {
               // The store ignores press for any match or seat but the one on screen.
               pressStore.addMessages(data.game_id, data.power, data.messages);
+            } else if (data.type === 'press_read') {
+              pressStore.syncReadMarks(
+                data.game_id,
+                data.power,
+                data.last_read,
+              );
             }
           } catch (err) {
             console.error('Failed to parse WebSocket message:', err);

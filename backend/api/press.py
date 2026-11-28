@@ -14,6 +14,9 @@ from domain.press import (
     PressMessage,
     PressMessageView,
     PressPostRequest,
+    PressReadRequest,
+    PressReadResponse,
+    normalize_channel_key,
 )
 from engine.adjudicator.resolver import compute_current_builds
 from engine.order_utils import (
@@ -27,9 +30,15 @@ from engine.topology.provinces import PROVINCES
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from security.auth import AuthUser, get_current_user
 from security.passcode import client_address
-from security.press import feed_for, spectator_feed, view_of
+from security.press import can_read, feed_for, number_for, spectator_feed, view_of
 from security.secrecy import require_view_access, viewer_power_for
 from storage.press import add_press, next_press_seq, persist_press, press_of
+from storage.press_cursors import (
+    advance_press_cursor,
+    cursors_for_power,
+    persist_press_cursors,
+    press_cursors_of,
+)
 from storage.store import (
     GAME_SUMMARIES,
     is_multiplayer_match,
@@ -96,6 +105,15 @@ async def _press_seat(
 async def _loaded_press(game_id: str) -> list[PressMessage]:
     try:
         return await press_of(game_id)
+    except SupabaseUnavailable as ex:
+        raise HTTPException(
+            status_code=503, detail="Press is unavailable right now. Please try again shortly."
+        ) from ex
+
+
+async def _loaded_cursors(game_id: str) -> dict[Power, dict[str, int]]:
+    try:
+        return await press_cursors_of(game_id)
     except SupabaseUnavailable as ex:
         raise HTTPException(
             status_code=503, detail="Press is unavailable right now. Please try again shortly."
@@ -289,9 +307,48 @@ async def read_press(
     if seat is None:
         require_view_access(gid, current_user, x_passcode, client=client_address(request))
         messages = await _loaded_press(gid)
-        return PressFeed(power=None, messages=spectator_feed(messages, after))
+        return PressFeed(power=None, messages=spectator_feed(messages, after), last_read={})
     messages = await _loaded_press(gid)
-    return PressFeed(power=seat, messages=feed_for(messages, seat, after))
+    cursors = await _loaded_cursors(gid)
+    return PressFeed(
+        power=seat,
+        messages=feed_for(messages, seat, after),
+        last_read=dict(cursors.get(seat, {})),
+    )
+
+
+@router.post(
+    "/api/press/read",
+    response_model=PressReadResponse,
+    summary="Mark Press Channel Read",
+    description=(
+        "Advance the caller's own per-channel read cursor monotonically to `seq` (clamped to "
+        "the highest message sequence readable by that seat). Pushes `press_read` to other open "
+        "sockets of the same seat and persists to Supabase."
+    ),
+)
+async def mark_press_read(
+    req: PressReadRequest,
+    game_id: str | None = Query(default=None),
+    current_user: AuthUser | None = Depends(get_current_user),
+):
+    game, seat = await _press_seat(game_id, req.power, current_user)
+    gid = game.game_id
+    channel = normalize_channel_key(req.channel, seat)
+    if channel is None:
+        raise HTTPException(status_code=422, detail="Invalid press channel.")
+
+    messages = await _loaded_press(gid)
+    await _loaded_cursors(gid)
+    max_seq = max((number_for(m, seat) for m in messages if can_read(m, seat)), default=0)
+    clamped = min(req.seq, max_seq)
+    if advance_press_cursor(gid, seat, channel, clamped):
+        seat_cursors = cursors_for_power(gid, seat)
+        await manager.broadcast_press_read(gid, seat, seat_cursors)
+        await persist_press_cursors(gid)
+    else:
+        seat_cursors = cursors_for_power(gid, seat)
+    return PressReadResponse(power=seat, last_read=seat_cursors)
 
 
 @router.post(

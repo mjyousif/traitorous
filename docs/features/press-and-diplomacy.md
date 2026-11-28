@@ -1,6 +1,6 @@
 # Press and Diplomacy
 
-Press is the in-match chat of a multiplayer game: a public box everyone reads, private threads between powers, optional anonymity for the author, and *order suggestions* a player can attach to a message. The server is the only party that knows who really wrote what, so every message is filtered per reader before it leaves the backend. Press lives outside the board state, in its own database column, so chatting and playing never overwrite each other.
+Press is the in-match chat of a multiplayer game: a public box everyone reads, private threads between powers, optional anonymity for the author, and *order suggestions* a player can attach to a message. The server is the only party that knows who really wrote what, so every message is filtered per reader before it leaves the backend. Press messages and per-seat read cursors live outside the board state, in their own normalized database tables, so chatting and playing never overwrite each other.
 
 ## Contents
 
@@ -104,17 +104,20 @@ sequenceDiagram
 
 ## Storage
 
-Press is kept per game in memory, separate from `GameState`, and saved to a dedicated `press` column of the game's `multiplayer_games` row by its own write.
+Press is kept per game in memory, separate from `GameState`, and saved incrementally to normalized Supabase tables (`press_threads`, `press_thread_members`, `press_messages`, and `press_read_cursors`):
 
-- A game save never touches the press column and a press save never touches the board, so neither can overwrite the other with an older copy.
-- Saves are coalesced per game: a save already running picks up messages added meanwhile.
-- At most 2000 messages are kept; the oldest are dropped so a row cannot grow forever.
+- A game save never touches the press tables and a press or read-cursor write never touches the board, so neither can overwrite the other with an older copy.
+- Saves are coalesced per game: a save already running picks up messages or cursor advances added meanwhile.
+- At most 2000 messages are kept in RAM; the oldest are dropped so memory cannot grow forever.
 - Messages saved before per-reader numbering existed are numbered when loaded.
-- If the load fails the API answers `503` rather than treating the press as empty (which could then overwrite saved press). If the column is missing (migration not applied) press works in memory only and a warning is logged once.
+- If a load fails the API answers `503` rather than treating press or read cursors as empty.
 
 ## Unread tracking and the client store
 
-The client keeps press in a small store outside React so the socket, the Press section, the rail and the phone top bar share it without props. Unread is tracked per channel (the public box and each thread) as how far the player has read; reading never moves backwards. Switching match or seat starts from empty.
+The client keeps press in a small store outside React (`frontend/src/lib/pressStore.ts`) so the socket, the Press section, the rail and the phone top bar share it without props. Unread is tracked per channel (`public`, `backchannel`, and each thread) as a monotonic `last_read` high-water mark (`seq`); reading never moves backwards.
+
+- **Cross-device sync**: For seated players, `GET /api/press` returns server-persisted `last_read` cursors, `usePressSync` flushes local advances via `POST /api/press/read`, and other open tabs/devices for the same seat receive live `press_read` WebSocket updates. `localStorage` remains as an instant/offline cache and for spectators.
+- Switching match or seat starts from empty (or that match/seat's saved marks).
 
 ## Invariants
 

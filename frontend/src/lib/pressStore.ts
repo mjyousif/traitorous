@@ -20,8 +20,10 @@ export interface PressState {
   power: Power | null;
   messages: PressMessage[];
   status: 'idle' | 'loading' | 'ready' | 'error';
-  /** How far the player has read each channel. */
+  /** How far the player has read each channel (local + server merged monotonically). */
   lastRead: Record<string, number>;
+  /** The highest per-channel read cursor confirmed by the server. */
+  serverLastRead: Record<string, number>;
   /**
    * The countries the next message goes to privately; empty is the public box. It is here
    * because they are picked on the Diplomatic Standing rows, outside the Press section.
@@ -37,6 +39,7 @@ const EMPTY: PressState = {
   messages: [],
   status: 'idle',
   lastRead: {},
+  serverLastRead: {},
   recipients: [],
   socketOpen: false,
 };
@@ -51,6 +54,25 @@ function set(next: PressState): void {
 
 function inScope(gameId: string, power: Power | null): boolean {
   return state.gameId === gameId && state.power === power;
+}
+
+function mergeReadMarks(
+  current: Record<string, number>,
+  incoming?: Record<string, number> | null,
+): Record<string, number> {
+  if (!incoming) return current;
+  let next: Record<string, number> | null = null;
+  for (const [channel, seq] of Object.entries(incoming)) {
+    if (
+      typeof seq === 'number' &&
+      Number.isFinite(seq) &&
+      seq > (current[channel] ?? 0)
+    ) {
+      if (!next) next = { ...current };
+      next[channel] = seq;
+    }
+  }
+  return next ?? current;
 }
 
 export const pressStore = {
@@ -90,11 +112,37 @@ export const pressStore = {
   setFeed(gameId: string, feed: PressFeed): void {
     if (!inScope(gameId, feed.power)) return;
     const messages = [...feed.messages].sort((a, b) => a.seq - b.seq);
+    const serverLastRead = mergeReadMarks(state.serverLastRead, feed.last_read);
+    const lastRead = mergeReadMarks(state.lastRead, feed.last_read);
+    if (lastRead !== state.lastRead) {
+      saveReadMarks(gameId, feed.power, lastRead);
+    }
     set({
       ...state,
       messages,
       status: 'ready',
+      lastRead,
+      serverLastRead,
     });
+  },
+  /** Merges server-confirmed read cursors without echoing them back to the server. */
+  syncReadMarks(
+    gameId: string,
+    power: Power | null,
+    incoming?: Record<string, number> | null,
+  ): void {
+    if (!inScope(gameId, power) || !incoming) return;
+    const serverLastRead = mergeReadMarks(state.serverLastRead, incoming);
+    const lastRead = mergeReadMarks(state.lastRead, incoming);
+    if (lastRead !== state.lastRead) {
+      saveReadMarks(gameId, power, lastRead);
+    }
+    if (
+      lastRead !== state.lastRead ||
+      serverLastRead !== state.serverLastRead
+    ) {
+      set({ ...state, lastRead, serverLastRead });
+    }
   },
   /** New messages, from the socket, a poll or the player's own post. */
   addMessages(

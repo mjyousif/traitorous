@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useSyncExternalStore } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { apiFetch, readErrorDetail } from '../lib/api';
 import { type PressState, pressStore } from '../lib/pressStore';
 import type {
@@ -6,6 +12,8 @@ import type {
   PressFeed,
   PressMessage,
   PressPostRequest,
+  PressReadRequest,
+  PressReadResponse,
 } from '../types/diplomacy';
 import { totalUnread } from '../utils/pressHelpers';
 
@@ -52,6 +60,7 @@ async function catchUp(reader: PressReader): Promise<void> {
     : 0;
   try {
     const feed = await readPress(reader, last);
+    pressStore.syncReadMarks(gameId, power, feed.last_read);
     pressStore.addMessages(gameId, power, feed.messages);
   } catch {
     // The next poll or socket message tries again.
@@ -89,6 +98,19 @@ export async function sendPress(
   return message;
 }
 
+export async function markPressRead(
+  gameId: string,
+  request: PressReadRequest,
+): Promise<PressReadResponse> {
+  const res = await apiFetch('/press/read', {
+    method: 'POST',
+    query: { game_id: gameId },
+    json: request,
+  });
+  if (!res.ok) throw new Error(`Press read sync failed: HTTP ${res.status}`);
+  return res.json();
+}
+
 const readSocketOpen = () => pressStore.getState().socketOpen;
 
 export interface PressSyncOptions {
@@ -115,6 +137,15 @@ export function usePressSync({
     readSocketOpen,
     readSocketOpen,
   );
+  const press = usePressState();
+  const attemptedRef = useRef<Map<string, number>>(new Map());
+  const hadFailureRef = useRef(false);
+  const [retryTick, setRetryTick] = useState(0);
+
+  useEffect(() => {
+    attemptedRef.current.clear();
+    hadFailureRef.current = false;
+  }, [gameId, power]);
 
   useEffect(() => {
     if (!gameId) {
@@ -131,6 +162,10 @@ export function usePressSync({
     if (!gameId) return;
     if (socketOpen) {
       catchUp({ gameId, power, passcode });
+      if (hadFailureRef.current) {
+        hadFailureRef.current = false;
+        setRetryTick((t) => t + 1);
+      }
       return;
     }
     const timer = window.setInterval(() => {
@@ -143,6 +178,46 @@ export function usePressSync({
     }, PRESS_POLL_MS);
     return () => clearInterval(timer);
   }, [gameId, power, socketOpen, passcode]);
+
+  useEffect(() => {
+    if (
+      !gameId ||
+      !power ||
+      press.gameId !== gameId ||
+      press.power !== power ||
+      press.status !== 'ready'
+    ) {
+      return;
+    }
+    for (const [channel, seq] of Object.entries(press.lastRead)) {
+      const known = Math.max(
+        press.serverLastRead[channel] ?? 0,
+        attemptedRef.current.get(channel) ?? 0,
+      );
+      if (seq > known) {
+        attemptedRef.current.set(channel, seq);
+        markPressRead(gameId, { power, channel, seq })
+          .then((res) => {
+            pressStore.syncReadMarks(gameId, power, res.last_read);
+          })
+          .catch(() => {
+            if (attemptedRef.current.get(channel) === seq) {
+              attemptedRef.current.delete(channel);
+            }
+            hadFailureRef.current = true;
+          });
+      }
+    }
+  }, [
+    gameId,
+    power,
+    press.gameId,
+    press.power,
+    press.status,
+    press.lastRead,
+    press.serverLastRead,
+    retryTick,
+  ]);
 }
 
 export function usePressState(): PressState {

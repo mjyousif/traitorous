@@ -139,6 +139,7 @@ Press (chat) has its own rules in `backend/security/press.py`, applied when mess
 - **Per-viewer numbering**: each player is sent `seq` numbers 1, 2, 3... of the messages *they* can read, so gaps never reveal how much private press others exchange.
 - **Unchanged at game over**: press visibility, anonymity, and per-viewer numbering never change when the game ends.
 - **Spectators** (no seat) read only the public box, numbered by its own public counter. Anonymous public authors stay hidden, private messages are never readable (even after game over) and spectators cannot send.
+- **Private read cursors**: per-channel `last_read` marks (`POST /api/press/read`, `GET /api/press`, and `press_read` WebSocket pushes) belong strictly to each seat—never exposed to rival powers or spectators, and never broadcast to sockets of another seat.
 
 ## Public summaries and PII
 

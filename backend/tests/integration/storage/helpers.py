@@ -3,6 +3,7 @@
 import uuid
 from datetime import datetime, timezone
 
+from domain.board import Power
 from domain.game_state import GameState, MultiplayerGameSummary, TurnHistoryEntry
 from domain.press import PressMessage
 from fastapi.testclient import TestClient
@@ -30,6 +31,7 @@ class FakeSupabase:
         self.phases: dict[str, dict[int, dict]] = {}
         self.press_threads: dict[str, dict[str, dict]] = {}
         self.press: dict[str, list[dict]] = {}
+        self.press_cursors: dict[str, dict[Power, dict[str, int]]] = {}
         self.db_ids: dict[str, str] = {}
         self.reads_fail = False
         self.writes_fail = False
@@ -203,6 +205,7 @@ class FakeSupabase:
         self.phases.pop(game_id, None)
         self.press_threads.pop(game_id, None)
         self.press.pop(game_id, None)
+        self.press_cursors.pop(game_id, None)
         self.db_ids.pop(game_id, None)
         return True
 
@@ -290,6 +293,22 @@ class FakeSupabase:
             row["thread_key"] = t_key
             bucket.append(row)
             stored_seqs.add(m.seq)
+        return True
+
+    async def load_press_cursors(self, game_id, client=None):
+        self._require_reads()
+        return {
+            power: dict(channels) for power, channels in self.press_cursors.get(game_id, {}).items()
+        }
+
+    async def save_press_cursors(self, game_id, cursors, client=None):
+        if self.writes_fail or game_id not in self.rows:
+            return False
+        bucket = self.press_cursors.setdefault(game_id, {})
+        for power, channels in cursors.items():
+            target = bucket.setdefault(power, {})
+            for channel, seq in channels.items():
+                target[channel] = max(target.get(channel, 0), int(seq))
         return True
 
 

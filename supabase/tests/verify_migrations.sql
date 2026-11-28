@@ -9,7 +9,8 @@ grant select, insert, update, delete on
   public.game_phases,
   public.press_threads,
   public.press_thread_members,
-  public.press_messages
+  public.press_messages,
+  public.press_read_cursors
 to anon, authenticated;
 
 do $$
@@ -681,6 +682,51 @@ begin
   exception when foreign_key_violation then null;
   end;
 
+  -- Verify press_read_cursors monotonic trigger, CHECK constraints, RLS, and cascade
+  insert into public.press_read_cursors (game_id, power, channel_key, last_read_seq)
+  values (g_full.id, 'FRANCE', 'public', 5);
+
+  update public.press_read_cursors
+  set last_read_seq = 2
+  where game_id = g_full.id and power = 'FRANCE' and channel_key = 'public';
+
+  select last_read_seq into cnt from public.press_read_cursors
+  where game_id = g_full.id and power = 'FRANCE' and channel_key = 'public';
+  if cnt <> 5 then
+    raise exception 'Expected monotonic trigger to keep last_read_seq=5 on regression, got %', cnt;
+  end if;
+
+  update public.press_read_cursors
+  set last_read_seq = 8
+  where game_id = g_full.id and power = 'FRANCE' and channel_key = 'public';
+
+  select last_read_seq into cnt from public.press_read_cursors
+  where game_id = g_full.id and power = 'FRANCE' and channel_key = 'public';
+  if cnt <> 8 then
+    raise exception 'Expected monotonic trigger to advance last_read_seq to 8, got %', cnt;
+  end if;
+
+  begin
+    insert into public.press_read_cursors (game_id, power, channel_key, last_read_seq)
+    values (g_full.id, 'france', 'public', 1);
+    raise exception 'Expected press_read_cursors power CHECK to reject lowercase power';
+  exception when check_violation then null;
+  end;
+
+  begin
+    insert into public.press_read_cursors (game_id, power, channel_key, last_read_seq)
+    values (g_full.id, 'FRANCE', '   ', 1);
+    raise exception 'Expected press_read_cursors channel_key CHECK to reject blank channel_key';
+  exception when check_violation then null;
+  end;
+
+  begin
+    insert into public.press_read_cursors (game_id, power, channel_key, last_read_seq)
+    values (g_full.id, 'FRANCE', 'public', -1);
+    raise exception 'Expected press_read_cursors last_read_seq CHECK to reject negative value';
+  exception when check_violation then null;
+  end;
+
   -- Verify public.lobby_games view is gone
   if exists (select 1 from information_schema.views where table_schema = 'public' and table_name = 'lobby_games') then
     raise exception 'Expected public.lobby_games view to be dropped';
@@ -703,6 +749,12 @@ begin
   if cnt <> 0 then raise exception 'authenticated saw % press_thread_members rows', cnt; end if;
   select count(*) into cnt from public.press_messages;
   if cnt <> 0 then raise exception 'authenticated saw % press_messages rows', cnt; end if;
+  select count(*) into cnt from public.press_read_cursors;
+  if cnt <> 0 then raise exception 'authenticated saw % press_read_cursors rows', cnt; end if;
+
+  if has_function_privilege('authenticated', 'public.enforce_press_read_cursor_monotonic()', 'EXECUTE') then
+    raise exception 'Expected authenticated to be denied execute on enforce_press_read_cursor_monotonic';
+  end if;
 
   begin
     perform public.handle_new_user();
@@ -723,7 +775,8 @@ begin
   if exists (select 1 from public.game_participants where game_id = g_full.id)
      or exists (select 1 from public.game_phases where game_id = g_full.id)
      or exists (select 1 from public.press_threads where game_id = g_full.id)
-     or exists (select 1 from public.press_messages where game_id = g_full.id) then
+     or exists (select 1 from public.press_messages where game_id = g_full.id)
+     or exists (select 1 from public.press_read_cursors where game_id = g_full.id) then
     raise exception 'Expected ON DELETE CASCADE to clean all child tables';
   end if;
 
